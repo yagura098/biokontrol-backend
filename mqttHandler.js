@@ -274,8 +274,6 @@ async function insertSensorErrors(sensorId, sensorErrors) {
 
 async function insertActuatorData(sensorId, actuators) {
   try {
-    console.log('💾 Inserting actuator data for sensor_id:', sensorId);
-    
     // Validasi dan sanitasi data
     const validatedActuators = validateActuatorData(actuators);
     console.log('✅ Validated actuator data:', validatedActuators);
@@ -283,7 +281,6 @@ async function insertActuatorData(sensorId, actuators) {
     const { error } = await supabase
       .from('actuators')
       .insert([{
-        sensor_id: sensorId, // Tambahkan sensor_id reference
         ...validatedActuators
       }]);
 
