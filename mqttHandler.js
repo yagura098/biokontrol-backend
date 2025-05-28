@@ -18,6 +18,66 @@ const client = mqtt.connect(process.env.MQTT_BROKER, mqttOptions);
 // Store sensor_id untuk linking control data
 let currentSensorId = null;
 
+// Utility function untuk validasi dan sanitasi data float
+function sanitizeFloatValue(value, fieldName) {
+  if (value === null || value === undefined) {
+    console.warn(`⚠️ ${fieldName} is null/undefined, setting to 0`);
+    return 0;
+  }
+  
+  const parsed = parseFloat(value);
+  if (isNaN(parsed)) {
+    console.warn(`⚠️ ${fieldName} is not a valid number: ${value}, setting to 0`);
+    return 0;
+  }
+  
+  // Round to 6 decimal places untuk menghindari floating point precision issues
+  return Math.round(parsed * 1000000) / 1000000;
+}
+
+// Utility function untuk validasi data sensor
+function validateSensorData(sensors) {
+  if (!sensors || typeof sensors !== 'object') {
+    throw new Error('Invalid sensors data structure');
+  }
+  
+  return {
+    ph: sanitizeFloatValue(sensors.ph, 'pH'),
+    temp: sanitizeFloatValue(sensors.temp, 'temperature'),
+    ch4: sanitizeFloatValue(sensors.ch4, 'CH4'),
+    pressure: sanitizeFloatValue(sensors.pressure, 'pressure')
+  };
+}
+
+// Utility function untuk validasi data sensor errors
+function validateSensorErrors(sensorErrors) {
+  if (!sensorErrors || typeof sensorErrors !== 'object') {
+    throw new Error('Invalid sensor_errors data structure');
+  }
+  
+  return {
+    ph_error: sanitizeFloatValue(sensorErrors.ph_error, 'pH error'),
+    ph_delta_error: sanitizeFloatValue(sensorErrors.ph_delta_error, 'pH delta error'),
+    temp_error: sanitizeFloatValue(sensorErrors.temp_error, 'temperature error'),
+    temp_delta_error: sanitizeFloatValue(sensorErrors.temp_delta_error, 'temperature delta error')
+  };
+}
+
+// Utility function untuk validasi data actuator
+function validateActuatorData(actuators) {
+  if (!actuators || typeof actuators !== 'object') {
+    throw new Error('Invalid actuators data structure');
+  }
+  
+  return {
+    pump_base: sanitizeFloatValue(actuators.pump_base, 'pump_base'),
+    pump_acid: sanitizeFloatValue(actuators.pump_acid, 'pump_acid'),
+    heater: sanitizeFloatValue(actuators.heater, 'heater'),
+    solenoid: sanitizeFloatValue(actuators.solenoid, 'solenoid'),
+    stirrer: sanitizeFloatValue(actuators.stirrer, 'stirrer')
+  };
+}
+
 // ----- MQTT Connection -----
 client.on('connect', () => {
   console.log('🟢 MQTT connected to:', process.env.MQTT_BROKER);
@@ -50,37 +110,32 @@ client.on('connect', () => {
 });
 
 client.on('message', async (topic, message) => {
+  const messageStr = message.toString();
+  
   try {
-    console.log(`📥 Raw message received from ${topic}:`, message.toString());
-    const payload = JSON.parse(message.toString());
+    console.log(`📥 Raw message received from ${topic}:`, messageStr);
+    
+    // Validasi JSON format
+    let payload;
+    try {
+      payload = JSON.parse(messageStr);
+    } catch (parseError) {
+      console.error('❌ Invalid JSON format:', parseError.message);
+      console.error('📄 Raw message:', messageStr);
+      return;
+    }
+    
     console.log(`📥 Parsed payload from ${topic}:`, JSON.stringify(payload, null, 2));
 
     switch (topic) {
       case 'biogas/data/sensors':
         console.log('🔄 Processing sensor data...');
-        if (payload.sensors && payload.sensor_errors) {
-          // Payload sensors berisi kedua data sensors dan sensor_errors
-          const sensorId = await insertSensorData(payload.sensors);
-          if (sensorId) {
-            currentSensorId = sensorId;
-            await insertSensorErrors(sensorId, payload.sensor_errors);
-          }
-        } else if (payload.sensors) {
-          // Hanya data sensors
-          const sensorId = await insertSensorData(payload.sensors);
-          if (sensorId) currentSensorId = sensorId;
-        }
+        await processSensorData(payload);
         break;
         
       case 'biogas/data/control':
         console.log('🔄 Processing control data...');
-        if (payload.actuators) {
-          // Gunakan currentSensorId atau cari yang terbaru
-          const sensorId = currentSensorId || await getLatestSensorId();
-          if (sensorId) {
-            await insertActuatorData(sensorId, payload.actuators);
-          }
-        }
+        await processControlData(payload);
         break;
         
       default:
@@ -89,15 +144,52 @@ client.on('message', async (topic, message) => {
   } catch (err) {
     console.error('❌ Failed to handle MQTT message:', err.message);
     console.error('❌ Stack trace:', err.stack);
-    console.error('📄 Raw message:', message.toString());
+    console.error('📄 Raw message:', messageStr);
   }
 });
 
-// Tambahkan event listeners untuk debugging
-client.on('connect', () => {
-  console.log('🟢 MQTT connect event fired');
-});
+async function processSensorData(payload) {
+  try {
+    if (payload.sensors && payload.sensor_errors) {
+      // Payload berisi kedua data sensors dan sensor_errors
+      const sensorId = await insertSensorData(payload.sensors);
+      if (sensorId) {
+        currentSensorId = sensorId;
+        await insertSensorErrors(sensorId, payload.sensor_errors);
+      }
+    } else if (payload.sensors) {
+      // Hanya data sensors
+      const sensorId = await insertSensorData(payload.sensors);
+      if (sensorId) currentSensorId = sensorId;
+    } else {
+      console.warn('⚠️ No sensor data found in payload');
+    }
+  } catch (err) {
+    console.error('❌ Error processing sensor data:', err.message);
+    throw err;
+  }
+}
 
+async function processControlData(payload) {
+  try {
+    if (payload.actuators) {
+      // Gunakan currentSensorId atau cari yang terbaru
+      const sensorId = currentSensorId || await getLatestSensorId();
+      if (sensorId) {
+        await insertActuatorData(sensorId, payload.actuators);
+      } else {
+        console.warn('⚠️ No sensor_id available for actuator data');
+      }
+    } else {
+      console.warn('⚠️ No actuator data found in payload');
+    }
+  } catch (err) {
+    console.error('❌ Error processing control data:', err.message);
+    throw err;
+  }
+}
+
+// Tambahkan event listeners untuk debugging
 client.on('reconnect', () => {
   console.log('🔄 MQTT reconnecting...');
 });
@@ -131,14 +223,14 @@ setInterval(() => {
 async function insertSensorData(sensors) {
   try {
     console.log('💾 Inserting sensor data:', sensors);
+    
+    // Validasi dan sanitasi data
+    const validatedSensors = validateSensorData(sensors);
+    console.log('✅ Validated sensor data:', validatedSensors);
+    
     const { data, error } = await supabase
       .from('sensors')
-      .insert([{
-        ph: sensors.ph,
-        temp: sensors.temp,
-        ch4: sensors.ch4,
-        pressure: sensors.pressure,
-      }])
+      .insert([validatedSensors])
       .select('id');
 
     if (error) {
@@ -157,14 +249,16 @@ async function insertSensorData(sensors) {
 async function insertSensorErrors(sensorId, sensorErrors) {
   try {
     console.log('💾 Inserting sensor errors for sensor_id:', sensorId);
+    
+    // Validasi dan sanitasi data
+    const validatedErrors = validateSensorErrors(sensorErrors);
+    console.log('✅ Validated sensor errors:', validatedErrors);
+    
     const { error } = await supabase
       .from('sensor_errors')
       .insert([{
         sensor_id: sensorId,
-        ph_error: sensorErrors.ph_error,
-        ph_delta_error: sensorErrors.ph_delta_error,
-        temp_error: sensorErrors.temp_error,
-        temp_delta_error: sensorErrors.temp_delta_error,
+        ...validatedErrors
       }]);
 
     if (error) {
@@ -181,14 +275,16 @@ async function insertSensorErrors(sensorId, sensorErrors) {
 async function insertActuatorData(sensorId, actuators) {
   try {
     console.log('💾 Inserting actuator data for sensor_id:', sensorId);
+    
+    // Validasi dan sanitasi data
+    const validatedActuators = validateActuatorData(actuators);
+    console.log('✅ Validated actuator data:', validatedActuators);
+    
     const { error } = await supabase
       .from('actuators')
       .insert([{
-        pump_base: actuators.pump_base,
-        pump_acid: actuators.pump_acid,
-        heater: actuators.heater,
-        solenoid: actuators.solenoid,
-        stirrer: actuators.stirrer,
+        sensor_id: sensorId, // Tambahkan sensor_id reference
+        ...validatedActuators
       }]);
 
     if (error) {
