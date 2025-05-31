@@ -1,5 +1,6 @@
 const { client, isWarmupActive, publishPhOffset } = require('./mqttHandler');
 const express = require('express');
+const cors = require('cors')
 const app = express();
 
 // Railway akan set PORT environment variable
@@ -7,6 +8,7 @@ const port = process.env.PORT || 3000;
 
 // Middleware
 app.use(express.json());
+app.use(cors());
 
 // Health check endpoint untuk Railway
 app.get('/health', (req, res) => {
