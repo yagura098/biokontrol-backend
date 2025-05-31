@@ -105,12 +105,12 @@ app.post('/api/calibrate-ph', async (req, res) => {
     }
     
     // Validasi rentang pH (0-14)
-    if (refPh < 0 || refPh > 14 || curPh < 0 || curPh > 14) {
-      return res.status(400).json({
-        success: false,
-        message: 'Nilai pH harus berada dalam rentang 0-14'
-      });
-    }
+    // if (refPh < 0 || refPh > 14 || curPh < 0 || curPh > 14) {
+    //   return res.status(400).json({
+    //     success: false,
+    //     message: 'Nilai pH harus berada dalam rentang 0-14'
+    //   });
+    // }
     
     // Hitung offset: offset = reference - current
     const offset = refPh - curPh;
