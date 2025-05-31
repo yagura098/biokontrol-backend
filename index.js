@@ -1,4 +1,4 @@
-const { client } = require('./mqttHandler');
+const { client, isWarmupActive, publishPhOffset } = require('./mqttHandler');
 const express = require('express');
 const app = express();
 
@@ -14,7 +14,8 @@ app.get('/health', (req, res) => {
     status: 'OK', 
     service: 'Biogas MQTT Receiver',
     timestamp: new Date().toISOString(),
-    mqtt_connected: client.connected
+    mqtt_connected: client.connected,
+    warmup_active: isWarmupActive
   });
 });
 
@@ -24,10 +25,12 @@ app.get('/', (req, res) => {
     message: 'Biogas MQTT Receiver is Running',
     status: 'active',
     mqtt_status: client.connected ? 'connected' : 'disconnected',
+    warmup_status: isWarmupActive ? 'active' : 'inactive',
     endpoints: {
       health: '/health',
       status: '/api/status',
-      debug: '/debug'
+      debug: '/debug',
+      calibrate_ph: '/api/calibrate-ph'
     }
   });
 });
@@ -50,6 +53,9 @@ app.get('/debug', (req, res) => {
       broker: process.env.MQTT_BROKER,
       topics: ['biogas/data/sensors', 'biogas/data/control']
     },
+    system: {
+      warmup_active: isWarmupActive
+    },
     uptime: process.uptime(),
     timestamp: new Date().toISOString()
   });
@@ -63,8 +69,100 @@ app.get('/api/status', (req, res) => {
       connected: client.connected,
       topics: ['biogas/data/sensors', 'biogas/data/control']
     },
+    system: {
+      warmup_active: isWarmupActive
+    },
     database: 'Supabase',
     uptime: process.uptime(),
+    timestamp: new Date().toISOString()
+  });
+});
+
+// pH Calibration endpoint
+app.post('/api/calibrate-ph', async (req, res) => {
+  try {
+    const { referencePh, currentPh } = req.body;
+    
+    // Validasi input
+    if (!referencePh || !currentPh) {
+      return res.status(400).json({
+        success: false,
+        message: 'Mohon isi kedua nilai pH (referencePh dan currentPh)'
+      });
+    }
+    
+    const refPh = parseFloat(referencePh);
+    const curPh = parseFloat(currentPh);
+    
+    // Validasi apakah nilai adalah angka yang valid
+    if (isNaN(refPh) || isNaN(curPh)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Nilai pH harus berupa angka yang valid'
+      });
+    }
+    
+    // Validasi rentang pH (0-14)
+    if (refPh < 0 || refPh > 14 || curPh < 0 || curPh > 14) {
+      return res.status(400).json({
+        success: false,
+        message: 'Nilai pH harus berada dalam rentang 0-14'
+      });
+    }
+    
+    // Hitung offset: offset = reference - current
+    const offset = refPh - curPh;
+    
+    // Validasi bahwa MQTT client terhubung
+    if (!client.connected) {
+      return res.status(503).json({
+        success: false,
+        message: 'MQTT client tidak terhubung. Tidak dapat mengirim offset pH.'
+      });
+    }
+    
+    // Kirim offset via MQTT
+    try {
+      publishPhOffset(offset);
+      
+      console.log(`🧪 pH Calibration completed:`, {
+        referencePh: refPh,
+        currentPh: curPh,
+        offset: offset
+      });
+      
+      res.json({
+        success: true,
+        message: 'Kalibrasi pH berhasil dikirim',
+        data: {
+          referencePh: refPh,
+          currentPh: curPh,
+          offset: offset,
+          timestamp: new Date().toISOString()
+        }
+      });
+      
+    } catch (mqttError) {
+      console.error('❌ Error publishing pH offset:', mqttError);
+      res.status(500).json({
+        success: false,
+        message: 'Gagal mengirim offset pH via MQTT: ' + mqttError.message
+      });
+    }
+    
+  } catch (error) {
+    console.error('❌ Error in pH calibration:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Terjadi kesalahan internal saat kalibrasi pH: ' + error.message
+    });
+  }
+});
+
+// Endpoint untuk mendapatkan status warmup saja
+app.get('/api/warmup-status', (req, res) => {
+  res.json({
+    warmup_active: isWarmupActive,
     timestamp: new Date().toISOString()
   });
 });
@@ -92,6 +190,7 @@ app.listen(port, '0.0.0.0', () => {
   console.log(`📡 MQTT Handler initialized`);
   console.log(`🗄️ Connected to Supabase`);
   console.log(`🔍 Debug endpoint available at: /debug`);
+  console.log(`🧪 pH Calibration endpoint available at: /api/calibrate-ph`);
   
   // Log environment info (tanpa sensitive data)
   console.log('🌍 Environment check:');

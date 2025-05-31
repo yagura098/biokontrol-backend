@@ -17,6 +17,8 @@ const client = mqtt.connect(process.env.MQTT_BROKER, mqttOptions);
 
 // Store sensor_id untuk linking control data
 let currentSensorId = null;
+// Store warmup status
+let isWarmupActive = false;
 
 // Utility function untuk validasi dan sanitasi data float
 function sanitizeFloatValue(value, fieldName) {
@@ -76,6 +78,22 @@ function validateActuatorData(actuators) {
     solenoid: sanitizeFloatValue(actuators.solenoid, 'solenoid'),
     stirrer: sanitizeFloatValue(actuators.stirrer, 'stirrer')
   };
+}
+
+// Function untuk mengirim pH offset via MQTT
+function publishPhOffset(offset) {
+  const payload = {
+    ph_offset: offset,
+    timestamp: new Date().toISOString()
+  };
+  
+  client.publish('biogas/ph_offset', JSON.stringify(payload), { qos: 1 }, (err) => {
+    if (err) {
+      console.error('❌ Failed to publish pH offset:', err);
+    } else {
+      console.log(`✅ Published pH offset: ${offset} to biogas/ph_offset`);
+    }
+  });
 }
 
 // ----- MQTT Connection -----
@@ -150,6 +168,12 @@ client.on('message', async (topic, message) => {
 
 async function processSensorData(payload) {
   try {
+    // Cek warmup status sebelum menyimpan data
+    if (isWarmupActive) {
+      console.log('🔄 Warmup active - skipping sensor data storage');
+      return;
+    }
+
     if (payload.sensors && payload.sensor_errors) {
       // Payload berisi kedua data sensors dan sensor_errors
       const sensorId = await insertSensorData(payload.sensors);
@@ -172,6 +196,21 @@ async function processSensorData(payload) {
 
 async function processControlData(payload) {
   try {
+    // Update warmup status dari system data
+    if (payload.system && payload.system.warmup_active !== undefined) {
+      const newWarmupStatus = payload.system.warmup_active === 1;
+      if (newWarmupStatus !== isWarmupActive) {
+        isWarmupActive = newWarmupStatus;
+        console.log(`🔄 Warmup status changed to: ${isWarmupActive ? 'ACTIVE' : 'INACTIVE'}`);
+      }
+    }
+
+    // Cek warmup status sebelum menyimpan data actuator
+    if (isWarmupActive) {
+      console.log('🔄 Warmup active - skipping actuator data storage');
+      return;
+    }
+
     if (payload.actuators) {
       // Gunakan currentSensorId atau cari yang terbaru
       const sensorId = currentSensorId || await getLatestSensorId();
@@ -331,5 +370,10 @@ process.on('SIGTERM', () => {
   process.exit(0);
 });
 
-// Export client untuk debugging jika diperlukan
-module.exports = { client, currentSensorId };
+// Export client dan functions untuk debugging jika diperlukan
+module.exports = { 
+  client, 
+  currentSensorId, 
+  isWarmupActive,
+  publishPhOffset 
+};
